@@ -159,3 +159,20 @@ def get_stats() -> Dict[str, Any]:
         "total_codes": total_codes,
         "latest_date": latest_date,
     }
+
+
+# ─────────────────────────────────────────────
+# 删除缓存
+# ─────────────────────────────────────────────
+def delete_stock_data(code: str) -> int:
+    """删除指定股票的缓存数据，返回删除行数"""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM stock_data WHERE code = ?", (code,))
+        return cur.rowcount
+
+
+def delete_all_data() -> int:
+    """清空全部缓存数据，返回删除行数"""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM stock_data")
+        return cur.rowcount

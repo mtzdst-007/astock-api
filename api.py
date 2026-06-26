@@ -3,7 +3,7 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -150,4 +150,51 @@ def health_check():
         "total_codes": stats["total_codes"],
         "total_rows":  stats["total_rows"],
         "latest_date": stats["latest_date"],
+    }
+
+
+# ─────────────────────────────────────────────
+# DELETE /stock/{code}/cache — 清空单只股票缓存
+# ─────────────────────────────────────────────
+class CacheResponse(BaseModel):
+    code:    str
+    deleted: int
+    message: str
+
+
+@router.delete(
+    "/stock/{code}/cache",
+    response_model=CacheResponse,
+    summary="清空指定股票的缓存数据",
+    description="删除该股票在数据库中的全部缓存记录。下次请求时将自动从数据源重新拉取。",
+)
+def clear_stock_cache(code: str):
+    code = code.strip()
+    deleted = db.delete_stock_data(code)
+    return {
+        "code":    code,
+        "deleted": deleted,
+        "message": f"已清空 {code} 的 {deleted} 条缓存记录，下次请求将重新拉取",
+    }
+
+
+# ─────────────────────────────────────────────
+# DELETE /cache — 清空全部缓存
+# ─────────────────────────────────────────────
+class AllCacheResponse(BaseModel):
+    deleted: int
+    message: str
+
+
+@router.delete(
+    "/cache",
+    response_model=AllCacheResponse,
+    summary="清空全部缓存数据",
+    description="删除数据库中全部股票缓存记录。下次请求时将自动从数据源重新拉取。",
+)
+def clear_all_cache():
+    deleted = db.delete_all_data()
+    return {
+        "deleted": deleted,
+        "message": f"已清空全部 {deleted} 条缓存记录",
     }
