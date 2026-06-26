@@ -96,37 +96,75 @@ def _df_to_records(df: pd.DataFrame, code: str, col_map=None) -> List[Dict[str, 
 
 
 # ═══════════════════════════════════════════════
-# 1. A股个股 —— 东方财富优先，akshare 内置回退
-#    ak.stock_zh_a_hist_em（东方财富）支持日期参数
-#    ak.stock_zh_a_hist 作为回退
+# 1. A股个股 —— 三层回退：腾讯 → 新浪 → akshare 默认
+#    ak.stock_zh_a_hist_tx（腾讯）— 稳定，缺 volume
+#    ak.stock_zh_a_daily（新浪）— 列完整，易封 IP
+#    ak.stock_zh_a_hist（akshare 默认）— 最后兜底
 # ═══════════════════════════════════════════════
+
+# 腾讯/新浪数据源使用 sh/sz/bj 前缀
+def _daily_symbol(code: str) -> str:
+    """6位代码 → 带交易所前缀的 symbol（腾讯/新浪格式）"""
+    if code.startswith(("60", "68")):
+        return f"sh{code}"
+    elif code.startswith(("00", "30")):
+        return f"sz{code}"
+    elif code.startswith(("4", "8")):
+        return f"bj{code}"
+    return code
+
+# 腾讯数据源列映射：amount 是成交额
+_COL_MAP_TX = {
+    "date": "date", "open": "open", "high": "high",
+    "low": "low", "close": "close", "amount": "turnover",
+}
+
 
 def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> List[Dict]:
     code = _normalize_code(code)
+    symbol = _daily_symbol(code)
 
-    # 首选：东方财富 A股历史数据
+    # 第1层：腾讯证券（最稳定）
     try:
         df = _retry_call(
-            ak.stock_zh_a_hist_em, symbol=code, period="daily",
+            ak.stock_zh_a_hist_tx, symbol=symbol,
+            start_date=start_date, end_date=end_date, adjust="qfq",
+        )
+        if df is not None and not df.empty:
+            records = _df_to_records(df, code, col_map=_COL_MAP_TX)
+            logger.info("✅  A股 %s 拉取 %d 条（腾讯）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_a_hist_tx(%s) 失败: %s，尝试新浪接口", symbol, e)
+
+    # 第2层：新浪日线（列完整但易封 IP）
+    try:
+        df = _retry_call(
+            ak.stock_zh_a_daily, symbol=symbol,
             start_date=start_date, end_date=end_date, adjust="qfq",
         )
         if df is not None and not df.empty:
             records = _df_to_records(df, code)
-            logger.info("✅  A股 %s 拉取 %d 条（东方财富）", code, len(records))
+            logger.info("✅  A股 %s 拉取 %d 条（新浪）", code, len(records))
             return records
     except Exception as e:
-        logger.warning("⚠️  stock_zh_a_hist_em(%s) 失败: %s，尝试备用接口", code, e)
+        logger.warning("⚠️  stock_zh_a_daily(%s) 失败: %s，尝试默认接口", symbol, e)
 
-    # 回退：默认 A股历史接口
-    df = _retry_call(
-        ak.stock_zh_a_hist, symbol=code, period="daily",
-        start_date=start_date, end_date=end_date, adjust="qfq",
-    )
+    # 第3层：akshare 默认接口
+    try:
+        df = _retry_call(
+            ak.stock_zh_a_hist, symbol=code, period="daily",
+            start_date=start_date, end_date=end_date, adjust="qfq",
+        )
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_a_hist(%s) 也失败: %s", code, e)
+        return []
+
     if df is None or df.empty:
-        logger.warning("⚠️  A股 %s 返回空数据", code)
+        logger.warning("⚠️  A股 %s 所有数据源均返回空数据", code)
         return []
     records = _df_to_records(df, code)
-    logger.info("✅  A股 %s 拉取 %d 条（备用）", code, len(records))
+    logger.info("✅  A股 %s 拉取 %d 条（默认回退）", code, len(records))
     return records
 
 
