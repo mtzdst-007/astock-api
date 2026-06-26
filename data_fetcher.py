@@ -50,12 +50,20 @@ def _get_code_type(code: str) -> str:
     """
     根据 CODE_TYPE_MAP 返回资产类型。
     不在映射中的纯6位数字代码默认为 "stock"（A股个股）。
+    支持大小写不敏感匹配。
     """
-    upper = code.strip().upper()
+    code = code.strip()
+    # 优先精确匹配，再尝试大写匹配，再尝试小写匹配
+    if code in CODE_TYPE_MAP:
+        return CODE_TYPE_MAP[code]
+    upper = code.upper()
     if upper in CODE_TYPE_MAP:
         return CODE_TYPE_MAP[upper]
+    lower = code.lower()
+    if lower in CODE_TYPE_MAP:
+        return CODE_TYPE_MAP[lower]
     # 默认：纯数字6位 → A股个股；其他 → 未知
-    if upper.isdigit() and len(upper) == 6:
+    if code.isdigit() and len(code) == 6:
         return "stock"
     return "unknown"
 
@@ -97,9 +105,13 @@ def _df_to_records(df: pd.DataFrame, code: str, col_map=None) -> List[Dict[str, 
 
 # ═══════════════════════════════════════════════
 # 1. A股个股 —— 三层回退：腾讯 → 新浪 → akshare 默认
-#    ak.stock_zh_a_hist_tx（腾讯）— 稳定，缺 volume
-#    ak.stock_zh_a_daily（新浪）— 列完整，易封 IP
-#    ak.stock_zh_a_hist（akshare 默认）— 最后兜底
+#    东方财富 priority: 由于 akshare 1.18.64 已移除 stock_zh_a_hist_em，
+#    A 股个股暂无东方财富日线接口可用。腾讯（stock_zh_a_hist_tx）
+#    作为首选（不含成交额），新浪（stock_zh_a_daily）作为补全回退。
+#    统一标准（东方财富格式）：
+#      volume  = 成交量（手，1手=100股）
+#      turnover = 成交额（元）
+#    INSERT OR REPLACE 策略确保东方财富数据（非A股）写入后覆盖旧数据。
 # ═══════════════════════════════════════════════
 
 # 腾讯/新浪数据源使用 sh/sz/bj 前缀
@@ -113,8 +125,22 @@ def _daily_symbol(code: str) -> str:
         return f"bj{code}"
     return code
 
-# 腾讯数据源列映射：amount 是成交额
+# ── 数据源列映射 ──
+# 统一标准（东方财富格式）：
+#   volume  = 成交量（手，1手=100股）
+#   turnover = 成交额（元）
+
+# 腾讯 source: columns = [date, open, close, high, low, amount]
+#   amount = 成交量（手）→ volume；成交额不提供 → turnover=None
 _COL_MAP_TX = {
+    "date": "date", "open": "open", "high": "high",
+    "low": "low", "close": "close", "amount": "volume",
+}
+
+# 新浪 source: columns = [date, open, high, low, close, volume, amount, outstanding_share, turnover]
+#   volume = 成交量（股）→ 需 ÷100 转手；amount = 成交额（元）→ turnover
+#   turnover(新浪) = 换手率 → 丢弃
+_COL_MAP_SINA = {
     "date": "date", "open": "open", "high": "high",
     "low": "low", "close": "close", "amount": "turnover",
 }
@@ -124,7 +150,7 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
     code = _normalize_code(code)
     symbol = _daily_symbol(code)
 
-    # 第1层：腾讯证券（最稳定）
+    # 第1层：腾讯证券（最稳定，成交量单位=手，无成交额）
     try:
         df = _retry_call(
             ak.stock_zh_a_hist_tx, symbol=symbol,
@@ -137,14 +163,17 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
     except Exception as e:
         logger.warning("⚠️  stock_zh_a_hist_tx(%s) 失败: %s，尝试新浪接口", symbol, e)
 
-    # 第2层：新浪日线（列完整但易封 IP）
+    # 第2层：新浪日线（成交量=股需÷100→手；成交额=元）
     try:
         df = _retry_call(
             ak.stock_zh_a_daily, symbol=symbol,
             start_date=start_date, end_date=end_date, adjust="qfq",
         )
         if df is not None and not df.empty:
-            records = _df_to_records(df, code)
+            # 新浪 volume 单位是股，转为手（÷100，取整）
+            if "volume" in df.columns:
+                df["volume"] = (pd.to_numeric(df["volume"], errors="coerce") / 100).round(0)
+            records = _df_to_records(df, code, col_map=_COL_MAP_SINA)
             logger.info("✅  A股 %s 拉取 %d 条（新浪）", code, len(records))
             return records
     except Exception as e:
