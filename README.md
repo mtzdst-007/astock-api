@@ -1,6 +1,6 @@
 # A股历史数据 API 服务
 
-> 轻量级 A 股历史日线数据服务：热门股票预热 + 按需加载 + SQLite 缓存 + 增量更新
+> 轻量级多市场历史日线数据服务：A股/指数/美股/期货/港股，热门股票预热 + 按需加载 + SQLite 缓存 + 增量更新
 
 ---
 
@@ -8,14 +8,16 @@
 
 ```
 2.0/
-├── main.py           # FastAPI 入口，负责初始化、预热、启动
-├── api.py            # API 路由定义（4个端点）
-├── db.py             # SQLite 数据库操作层
-├── data_fetcher.py   # AkShare 封装（拉取、重试、批量）
-├── scheduler.py      # APScheduler 定时增量更新
-├── config.py         # 全局配置 + 100只兜底热门股票
-├── requirements.txt  # Python 依赖
-└── stock.db          # 运行后自动生成的 SQLite 数据库
+├── main.py                # FastAPI 入口，负责初始化、预热、启动
+├── api.py                 # API 路由定义（5个端点）
+├── db.py                  # SQLite 数据库操作层
+├── data_fetcher.py        # AkShare 封装（多市场分发、重试、批量）
+├── scheduler.py           # APScheduler 定时增量更新
+├── config.py              # 全局配置 + 兜底列表 + 多市场代码映射
+├── requirements.txt       # Python 依赖
+├── stock.db               # 运行后自动生成的 SQLite 数据库
+├── API_DOCUMENTATION.md   # 完整 API 接口文档（含调用示例）
+└── API_DOCUMENTATION.txt  # 同上，纯文本格式
 ```
 
 ---
@@ -24,11 +26,37 @@
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/stock/{code}` | GET | 获取某只股票全部历史K线（升序） |
-| `/stock/{code}/latest?limit=30` | GET | 获取最近 N 条K线，默认30条 |
-| `/stocks` | GET | 查看数据库中已缓存的股票列表 |
+| `/stock/{code}` | GET | 获取标的全量历史K线（升序），支持多市场 |
+| `/stock/{code}/latest?limit=30` | GET | 获取最近 N 条K线，默认30条，上限2000 |
+| `/stocks` | GET | 查看数据库中已缓存的标的列表 |
 | `/health` | GET | 健康检查 + 数据库统计 |
 | `/docs` | GET | Swagger 自动文档（FastAPI 自带） |
+
+> 📖 完整 API 文档（含各语言调用示例）：见 `API_DOCUMENTATION.md`
+
+---
+
+## 支持的市场
+
+| 市场 | 代码格式 | 示例 |
+|------|----------|------|
+| A股个股 | 6位数字 | `600519`（茅台）、`000001`（平安银行） |
+| A股指数 | 6位数字 | `000001`（上证指数）、`399006`（创业板指） |
+| 美股ETF | 字母代码 | `QQQ`、`TQQQ`、`SOXL` |
+| 全球指数 | 字母代码 | `DJIA`（道琼斯）、`NDX`（纳指） |
+| 国内期货 | 字母代码 | `lcfi`（碳酸锂加权）、`cufi`（沪铜） |
+| 国际期货 | 字母代码 | `GC26N`（COMEX黄金） |
+| 港股 | 5位数字字符串 | `03460` |
+
+数据源为 AkShare，通过 `config.CODE_TYPE_MAP` 配置代码类型，未配置的6位数字默认按 A股个股处理。
+
+---
+
+## 数据更新
+
+- **首次请求**：自动从 AkShare 拉取全历史并缓存（Lazy Load）
+- **增量更新**：每工作日 16:30（北京时间）自动追加最新数据
+- **全量刷新**：重新启动服务触发预热（仅热门标的）
 
 ---
 
@@ -164,3 +192,21 @@ GET /stock/000001
 - `INSERT OR IGNORE` + `executemany` 批量写入，自动去重
 - WAL 模式 + 复合索引 `(code, date DESC)` 加速范围查询
 - 预热在后台异步执行，**不阻塞服务启动**，启动后即可响应 API
+
+---
+
+## 更新日志
+
+### v1.1.0 (2026-06-26)
+
+- 新增完整 API 文档 `API_DOCUMENTATION.md`（含 cURL/JS/Python/Swift/Kotlin/Flutter 调用示例）
+- 修复指数接口 404 问题：`_fetch_index` 优先使用新浪数据源（`stock_zh_index_daily`），东方财富接口（`stock_zh_index_daily_em`）作为回退
+- 指数 fallback 后正确做日期过滤，避免返回全量数据
+- 指数接口正确处理英文字段名映射
+
+### v1.0.0 (2026-06-XX)
+
+- 初始版本，支持 A股/指数/美股/期货/港股多市场数据
+- Lazy Load 按需加载 + 定时增量更新
+- Swagger 在线文档（`/docs`）
+- Render.com 部署支持
