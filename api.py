@@ -3,7 +3,8 @@
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 import db
@@ -12,6 +13,14 @@ import data_fetcher as fetcher
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# ─────────────────────────────────────────────
+# GET / — 重定向到 API 文档
+# ─────────────────────────────────────────────
+@router.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/docs")
 
 
 # ─────────────────────────────────────────────
@@ -65,8 +74,11 @@ def _lazy_load(code: str) -> bool:
 @router.get(
     "/stock/{code}",
     response_model=List[KLine],
-    summary="获取股票全部历史K线",
-    description="返回指定股票的全部历史日线数据（升序）。首次请求时自动从 AkShare 拉取并缓存。",
+    summary="获取标的全量历史K线",
+    description=(
+        "返回指定标的全量历史日线数据（升序）。首次请求时自动拉取并缓存。\n\n"
+        "支持多市场：A股个股 / A股指数 / 美股ETF / 全球指数 / 期货 / 港股"
+    ),
 )
 def get_stock_history(code: str, background_tasks: BackgroundTasks):
     code = code.strip()
@@ -88,8 +100,8 @@ def get_stock_history(code: str, background_tasks: BackgroundTasks):
 @router.get(
     "/stock/{code}/latest",
     response_model=List[KLine],
-    summary="获取股票最近N条K线",
-    description="返回最近 limit 条日线数据（升序），默认30条。首次请求时自动从 AkShare 拉取。",
+    summary="获取标的最近N条K线",
+    description="返回最近 limit 条日线数据（升序），默认30条。支持多市场：A股个股 / 指数 / 美股 / 期货 / 港股等。",
 )
 def get_stock_latest(
     code:  str,

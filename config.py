@@ -134,3 +134,52 @@ FALLBACK_HOT_STOCKS = [
     "688111",  # 金山办公
     "688981",  # 中芯国际
 ]
+
+# ─────────────────────────────────────────────
+# 代码 → 资产类型映射
+# 类型: stock=个股 / index=指数 / us=美股 / global=全球指数
+#       cn_futures=国内期货 / global_futures=国际期货 / hk=港股
+# ─────────────────────────────────────────────
+CODE_TYPE_MAP = {
+    # === A股指数 ===
+    "000001": "index",       # 上证指数
+    "000688": "index",       # 科创50
+    "399006": "index",       # 创业板指数
+    "931238": "index",       # SSH黄金股票
+    "489013": "index",       # 稀土产业链R
+    # === 美股ETF / 个股 ===
+    "QQQ":    "us",          # 纳斯达克100ETF-Invesco
+    "TQQQ":   "us",          # 三倍做多纳斯达克100ETF
+    "SOXL":   "us",          # 三倍做多半导体ETF
+    "BTC":    "us",          # Grayscale Bitcoin Mini Trust ETF
+    "ETH":    "us",          # 低成本以太坊ETF-Grayscale
+    "SUI":    "us",          # Sun Communities Inc
+    "ZECP":   "us",          # Zacks Earnings Consistent Portfolio
+    # === 全球指数 ===
+    "DJIA":   "global",      # 道琼斯指数
+    "NDX":    "global",      # 纳斯达克指数
+    "N225":   "global",      # 日经225指数
+    "KS11":   "global",      # 韩国KOSPI指数
+    # === 国内期货 ===
+    "lcfi":   "cn_futures",  # 碳酸锂加权
+    "bcfi":   "cn_futures",  # 国际铜加权
+    "cufi":   "cn_futures",  # 沪铜加权
+    "nifi":   "cn_futures",  # 沪镍加权
+    "lc2607": "cn_futures",  # 碳酸锂2607
+    "ni2607": "cn_futures",  # 沪镍2607
+    # === 国际期货 ===
+    "GC26N":  "global_futures",  # COMEX黄金2607
+    "SI26Q":  "global_futures",  # COMEX白银2608
+    "HG26N":  "global_futures",  # COMEX铜2607
+    # === 港股 ===
+    "03460":  "hk",          # 华夏SOL
+}
+
+# ─────────────────────────────────────────────
+# 用户自选股票（始终纳入热门列表，不受指数成分股获取影响）
+# ─────────────────────────────────────────────
+CUSTOM_FAVORITES = [
+    "600489",   # 中金黄金
+    "002716",   # 湖南白银
+    "300059",   # 东方财富（已在兜底列表中，再次强调）
+]
