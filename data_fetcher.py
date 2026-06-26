@@ -9,7 +9,7 @@ import pandas as pd
 
 from config import (
     FETCH_RETRY, FETCH_DELAY, FALLBACK_HOT_STOCKS,
-    CODE_TYPE_MAP, CUSTOM_FAVORITES,
+    CODE_TYPE_MAP, CODE_NAME_MAP, CUSTOM_FAVORITES,
 )
 
 logger = logging.getLogger(__name__)
@@ -440,3 +440,54 @@ def fetch_batch(
         if i < len(codes) - 1:
             time.sleep(delay)
     return result
+
+
+# ═══════════════════════════════════════════════
+# 标的名称查询
+# ═══════════════════════════════════════════════
+
+# A股名称缓存（内存级，避免重复调用 AkShare）
+_a_stock_name_cache: Optional[Dict[str, str]] = None
+
+
+def _load_a_stock_names() -> Dict[str, str]:
+    """从 AkShare 加载全部 A 股代码→名称映射（带缓存）"""
+    global _a_stock_name_cache
+    if _a_stock_name_cache is not None:
+        return _a_stock_name_cache
+    try:
+        df = _retry_call(ak.stock_info_a_code_name)
+        if df is not None and not df.empty:
+            # 列名可能是 code/name 或 代码/名称
+            code_col = next((c for c in df.columns if c in ("code", "代码")), df.columns[0])
+            name_col = next((c for c in df.columns if c in ("name", "名称")), df.columns[1])
+            _a_stock_name_cache = dict(zip(df[code_col].astype(str).str.strip(), df[name_col].astype(str).str.strip()))
+            logger.info("📋  加载 %d 条 A 股名称", len(_a_stock_name_cache))
+        else:
+            _a_stock_name_cache = {}
+    except Exception as e:
+        logger.warning("⚠️  A股名称加载失败: %s", e)
+        _a_stock_name_cache = {}
+    return _a_stock_name_cache
+
+
+def get_stock_name(code: str) -> str:
+    """
+    获取标的名称。
+    优先查 CODE_NAME_MAP（已知标的），其次查 AkShare A股名称库，都找不到返回代码本身。
+    """
+    # 1. 手动映射
+    if code in CODE_NAME_MAP:
+        return CODE_NAME_MAP[code]
+    # 2. A股（6位数字）→ AkShare 名称库
+    if code.isdigit() and len(code) == 6:
+        names = _load_a_stock_names()
+        if code in names:
+            return names[code]
+    # 3. 兜底
+    return code
+
+
+def get_stock_names(codes: List[str]) -> Dict[str, str]:
+    """批量获取标的名称"""
+    return {c: get_stock_name(c) for c in codes}

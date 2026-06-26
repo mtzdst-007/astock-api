@@ -37,9 +37,23 @@ class KLine(BaseModel):
     turnover: Optional[float]
 
 
+class StockItem(BaseModel):
+    code: str
+    name: str
+
+
 class StockListResponse(BaseModel):
     count:  int
-    stocks: List[str]
+    stocks: List[StockItem]
+
+
+class StockInfoResponse(BaseModel):
+    code:      str
+    name:      str
+    type:      str
+    has_data:  bool
+    row_count: Optional[int] = None
+    latest_date: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -126,12 +140,45 @@ def get_stock_latest(
 @router.get(
     "/stocks",
     response_model=StockListResponse,
-    summary="获取数据库中股票列表",
-    description="返回数据库中已缓存的全部股票代码。",
+    summary="获取数据库中股票列表（含名称）",
+    description="返回数据库中已缓存的全部股票代码及名称。",
 )
 def get_stock_list():
-    stocks = db.query_stock_list()
-    return {"count": len(stocks), "stocks": stocks}
+    codes = db.query_stock_list()
+    names = fetcher.get_stock_names(codes)
+    items = [{"code": c, "name": names.get(c, c)} for c in codes]
+    return {"count": len(items), "stocks": items}
+
+
+# ─────────────────────────────────────────────
+# GET /stock/{code}/info — 标的基本信息
+# ─────────────────────────────────────────────
+@router.get(
+    "/stock/{code}/info",
+    response_model=StockInfoResponse,
+    summary="获取标的基本信息",
+    description="返回代码、名称、资产类型、是否有缓存数据等基本信息。不触发数据拉取。",
+)
+def get_stock_info(code: str):
+    from data_fetcher import _get_code_type
+    code = code.strip()
+    code_type = _get_code_type(code)
+    name = fetcher.get_stock_name(code)
+    has = db.has_data(code)
+    row_count = None
+    latest_date = None
+    if has:
+        rows = db.query_all(code)
+        row_count = len(rows)
+        latest_date = rows[-1]["date"] if rows else None
+    return {
+        "code":        code,
+        "name":        name,
+        "type":        code_type,
+        "has_data":    has,
+        "row_count":   row_count,
+        "latest_date": latest_date,
+    }
 
 
 # ─────────────────────────────────────────────

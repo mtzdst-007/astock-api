@@ -28,9 +28,10 @@
 |------|------|------|
 | `/stock/{code}` | GET | 获取标的全量历史K线（升序），支持多市场 |
 | `/stock/{code}/latest?limit=30` | GET | 获取最近 N 条K线，默认30条，上限2000 |
+| `/stock/{code}/info` | GET | 获取标的基本信息（名称、类型、数据概况），不触发拉取 |
 | `/stock/{code}/cache` | DELETE | 清空指定股票缓存，下次请求重新拉取 |
 | `/cache` | DELETE | 清空全部缓存数据 |
-| `/stocks` | GET | 查看数据库中已缓存的标的列表 |
+| `/stocks` | GET | 查看数据库中已缓存的标的列表（含代码+名称） |
 | `/health` | GET | 健康检查 + 数据库统计 |
 | `/docs` | GET | Swagger 自动文档（FastAPI 自带） |
 
@@ -202,14 +203,13 @@ GET /stock/000001
 
 ### v1.1.1 (2026-06-26)
 
-- **数据源优先级全面调整为东方财富优先**：
-  - `_fetch_index`（A股指数）：东方财富 `stock_zh_index_daily_em` → 新浪 `stock_zh_index_daily` 回退
-  - `_fetch_a_stock`（A股个股）：新增东方财富 `stock_zh_a_hist_em` 为首选，原接口回退
-  - `_fetch_cn_futures`（国内期货）：新增东方财富 `futures_zh_daily_em` 为首选，新浪双接口回退
-  - 全球指数、国际期货已是东方财富优先，无需改动
-- **DB 写入策略改为覆盖**：`INSERT OR IGNORE` → `INSERT OR REPLACE`，确保东方财富偶尔拉到的数据能覆盖之前新浪写入的同日记录
-- **新增清空缓存接口**：`DELETE /stock/{code}/cache` 清空单只股票缓存，`DELETE /cache` 清空全部缓存，下次请求自动重新拉取
-- 修复 `api.py` 中 `BackgroundTasks` 未导入的问题
+- **数据源优先级全面调整为东方财富优先**
+- **DB 写入策略改为覆盖**：`INSERT OR IGNORE` → `INSERT OR REPLACE`
+- **新增清空缓存接口**：`DELETE /stock/{code}/cache` 和 `DELETE /cache`
+- **新增标的名称显示**：`/stocks` 返回代码+名称，新增 `GET /stock/{code}/info` 查看基本信息（名称、类型、数据概况）
+  - 已知标的（指数/期货/美股等）手动维护名称映射
+  - A 股个股通过 AkShare 自动查询名称并缓存
+- 修复 `BackgroundTasks` 未导入问题
 
 ### v1.1.0 (2026-06-26)
 
