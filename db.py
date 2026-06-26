@@ -64,7 +64,7 @@ def init_db():
 # 写入（批量，去重）
 # ─────────────────────────────────────────────
 INSERT_SQL = """
-INSERT OR IGNORE INTO stock_data
+INSERT OR REPLACE INTO stock_data
     (code, date, open, high, low, close, volume, turnover)
 VALUES
     (:code, :date, :open, :high, :low, :close, :volume, :turnover)
@@ -73,7 +73,8 @@ VALUES
 
 def upsert_records(records: List[Dict[str, Any]]) -> int:
     """
-    批量写入记录，忽略已存在的 (code, date) 对。
+    批量写入记录。如 (code, date) 已存在则覆盖（INSERT OR REPLACE）。
+    确保后续数据源（如东方财富）可覆盖之前的数据（如新浪回退）。
     返回实际写入行数。
     """
     if not records:

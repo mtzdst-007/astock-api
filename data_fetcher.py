@@ -96,11 +96,28 @@ def _df_to_records(df: pd.DataFrame, code: str, col_map=None) -> List[Dict[str, 
 
 
 # ═══════════════════════════════════════════════
-# 1. A股个股 —— ak.stock_zh_a_hist
+# 1. A股个股 —— 东方财富优先，akshare 内置回退
+#    ak.stock_zh_a_hist_em（东方财富）支持日期参数
+#    ak.stock_zh_a_hist 作为回退
 # ═══════════════════════════════════════════════
 
 def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> List[Dict]:
     code = _normalize_code(code)
+
+    # 首选：东方财富 A股历史数据
+    try:
+        df = _retry_call(
+            ak.stock_zh_a_hist_em, symbol=code, period="daily",
+            start_date=start_date, end_date=end_date, adjust="qfq",
+        )
+        if df is not None and not df.empty:
+            records = _df_to_records(df, code)
+            logger.info("✅  A股 %s 拉取 %d 条（东方财富）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_a_hist_em(%s) 失败: %s，尝试备用接口", code, e)
+
+    # 回退：默认 A股历史接口
     df = _retry_call(
         ak.stock_zh_a_hist, symbol=code, period="daily",
         start_date=start_date, end_date=end_date, adjust="qfq",
@@ -109,13 +126,14 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
         logger.warning("⚠️  A股 %s 返回空数据", code)
         return []
     records = _df_to_records(df, code)
-    logger.info("✅  A股 %s 拉取 %d 条", code, len(records))
+    logger.info("✅  A股 %s 拉取 %d 条（备用）", code, len(records))
     return records
 
 
 # ═══════════════════════════════════════════════
-# 2. A股指数 —— ak.stock_zh_index_daily_em
-#    失败则 fallback 到 ak.stock_zh_index_daily（新浪，不支持日期参数）
+# 2. A股指数 —— 东方财富优先，新浪回退
+#    东方财富（ak.stock_zh_index_daily_em）支持日期参数
+#    新浪（ak.stock_zh_index_daily）不支持日期参数，需拉全量后过滤
 # ═══════════════════════════════════════════════
 
 # 指数代码 → AkShare symbol 前缀规则
@@ -130,42 +148,43 @@ def _index_symbol(code: str) -> str:
 def _fetch_index(code: str, start_date="19900101", end_date="21001231") -> List[Dict]:
     symbol = _index_symbol(code)
 
-    # 首选：新浪接口（稳定，但不支持日期参数，需拉全量后过滤）
-    try:
-        df = _retry_call(ak.stock_zh_index_daily, symbol=symbol)
-        if df is not None and not df.empty:
-            # 过滤日期范围
-            try:
-                df["date"] = pd.to_datetime(df["date"])
-                start_dt = pd.to_datetime(start_date, format="%Y%m%d")
-                end_dt   = pd.to_datetime(end_date,   format="%Y%m%d")
-                df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
-                df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-            except Exception as e2:
-                logger.warning("⚠️  指数 %s 日期过滤失败（返回全量）: %s", code, e2)
-            col_map = _COL_MAP_US
-            records = _df_to_records(df, code, col_map=col_map)
-            logger.info("✅  指数 %s 拉取 %d 条（新浪）", code, len(records))
-            return records
-    except Exception as e:
-        logger.warning("⚠️  stock_zh_index_daily(%s) 失败: %s，尝试东方财富接口", symbol, e)
-
-    # 回退：东方财富接口（支持日期参数，但网络不稳定）
+    # 首选：东方财富接口（支持日期参数）
     try:
         df = _retry_call(
             ak.stock_zh_index_daily_em, symbol=symbol,
             start_date=start_date, end_date=end_date,
         )
+        if df is not None and not df.empty:
+            col_map = _COL_MAP_CN
+            records = _df_to_records(df, code, col_map=col_map)
+            logger.info("✅  指数 %s 拉取 %d 条（东方财富）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_index_daily_em(%s) 失败: %s，尝试新浪接口", symbol, e)
+
+    # 回退：新浪接口（不支持日期参数，需拉全量后过滤）
+    try:
+        df = _retry_call(ak.stock_zh_index_daily, symbol=symbol)
     except Exception as e2:
-        logger.warning("⚠️  stock_zh_index_daily_em(%s) 也失败: %s", symbol, e2)
+        logger.warning("⚠️  stock_zh_index_daily(%s) 也失败: %s", symbol, e2)
 
     if df is None or df.empty:
         logger.warning("⚠️  指数 %s 所有数据源均返回空数据", code)
         return []
 
-    col_map = _COL_MAP_CN
+    # 新浪接口需手动过滤日期范围
+    try:
+        df["date"] = pd.to_datetime(df["date"])
+        start_dt = pd.to_datetime(start_date, format="%Y%m%d")
+        end_dt   = pd.to_datetime(end_date,   format="%Y%m%d")
+        df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+    except Exception as e2:
+        logger.warning("⚠️  指数 %s 日期过滤失败（返回全量）: %s", code, e2)
+
+    col_map = _COL_MAP_US
     records = _df_to_records(df, code, col_map=col_map)
-    logger.info("✅  指数 %s 拉取 %d 条（东方财富）", code, len(records))
+    logger.info("✅  指数 %s 拉取 %d 条（新浪回退）", code, len(records))
     return records
 
 
@@ -205,10 +224,23 @@ def _fetch_global_index(code: str, start_date="19900101", end_date="21001231") -
 
 
 # ═══════════════════════════════════════════════
-# 5. 国内期货 —— ak.futures_main_sina / futures_zh_daily_sina
+# 5. 国内期货 —— 东方财富优先，新浪回退
+#    ak.futures_zh_daily_em（东方财富）
+#    ak.futures_zh_daily_sina / ak.futures_main_sina（新浪回退）
 # ═══════════════════════════════════════════════
 
 def _fetch_cn_futures(code: str, start_date="19900101", end_date="21001231") -> List[Dict]:
+    # 首选：东方财富
+    try:
+        df = _retry_call(ak.futures_zh_daily_em, symbol=code)
+        if df is not None and not df.empty:
+            records = _df_to_records(df, code)
+            logger.info("✅  期货 %s 拉取 %d 条（东方财富）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  futures_zh_daily_em(%s) 失败: %s，尝试新浪接口", code, e)
+
+    # 回退：新浪
     try:
         df = _retry_call(ak.futures_zh_daily_sina, symbol=code)
     except Exception:
@@ -218,7 +250,7 @@ def _fetch_cn_futures(code: str, start_date="19900101", end_date="21001231") -> 
         logger.warning("⚠️  期货 %s 返回空数据", code)
         return []
     records = _df_to_records(df, code)
-    logger.info("✅  期货 %s 拉取 %d 条", code, len(records))
+    logger.info("✅  期货 %s 拉取 %d 条（新浪回退）", code, len(records))
     return records
 
 
