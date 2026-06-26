@@ -1,0 +1,17 @@
+# A股历史数据API服务依赖
+
+# Web 框架
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+# AkShare 数据源
+akshare==1.14.6
+
+# 数据处理
+pandas==2.2.2
+
+# 定时任务
+APScheduler==3.10.4
+
+# 验证（FastAPI 依赖）
+pydantic==2.7.1

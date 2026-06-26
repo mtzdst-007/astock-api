@@ -1,0 +1,141 @@
+# api.py — FastAPI 路由定义
+
+import logging
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from pydantic import BaseModel
+
+import db
+import data_fetcher as fetcher
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ─────────────────────────────────────────────
+# 响应模型
+# ─────────────────────────────────────────────
+class KLine(BaseModel):
+    code:     str
+    date:     str
+    open:     Optional[float]
+    high:     Optional[float]
+    low:      Optional[float]
+    close:    Optional[float]
+    volume:   Optional[float]
+    turnover: Optional[float]
+
+
+class StockListResponse(BaseModel):
+    count:  int
+    stocks: List[str]
+
+
+class HealthResponse(BaseModel):
+    status:      str
+    total_codes: int
+    total_rows:  int
+    latest_date: Optional[str]
+
+
+# ─────────────────────────────────────────────
+# 内部：按需拉取并写入（Lazy Load）
+# ─────────────────────────────────────────────
+def _lazy_load(code: str) -> bool:
+    """
+    如果数据库中没有该股票，则从 AkShare 拉取全历史写入。
+    返回 True 表示成功写入（或已存在），False 表示拉取失败。
+    """
+    if db.has_data(code):
+        return True
+    logger.info("📥  Lazy Load: %s 不在缓存，开始拉取...", code)
+    records = fetcher.fetch_stock_history(code)
+    if not records:
+        return False
+    written = db.upsert_records(records)
+    logger.info("📥  Lazy Load: %s 写入 %d 条", code, written)
+    return True
+
+
+# ─────────────────────────────────────────────
+# GET /stock/{code}
+# ─────────────────────────────────────────────
+@router.get(
+    "/stock/{code}",
+    response_model=List[KLine],
+    summary="获取股票全部历史K线",
+    description="返回指定股票的全部历史日线数据（升序）。首次请求时自动从 AkShare 拉取并缓存。",
+)
+def get_stock_history(code: str, background_tasks: BackgroundTasks):
+    code = code.strip()
+    ok = _lazy_load(code)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"股票 {code} 数据不存在，且无法从数据源获取（可能代码有误或网络问题）",
+        )
+    rows = db.query_all(code)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"股票 {code} 暂无数据")
+    return rows
+
+
+# ─────────────────────────────────────────────
+# GET /stock/{code}/latest
+# ─────────────────────────────────────────────
+@router.get(
+    "/stock/{code}/latest",
+    response_model=List[KLine],
+    summary="获取股票最近N条K线",
+    description="返回最近 limit 条日线数据（升序），默认30条。首次请求时自动从 AkShare 拉取。",
+)
+def get_stock_latest(
+    code:  str,
+    limit: int = Query(default=30, ge=1, le=2000, description="返回条数，默认30"),
+):
+    code = code.strip()
+    ok = _lazy_load(code)
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"股票 {code} 数据不存在，且无法从数据源获取",
+        )
+    rows = db.query_latest(code, limit)
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"股票 {code} 暂无数据")
+    return rows
+
+
+# ─────────────────────────────────────────────
+# GET /stocks
+# ─────────────────────────────────────────────
+@router.get(
+    "/stocks",
+    response_model=StockListResponse,
+    summary="获取数据库中股票列表",
+    description="返回数据库中已缓存的全部股票代码。",
+)
+def get_stock_list():
+    stocks = db.query_stock_list()
+    return {"count": len(stocks), "stocks": stocks}
+
+
+# ─────────────────────────────────────────────
+# GET /health
+# ─────────────────────────────────────────────
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="健康检查",
+    description="返回服务状态及数据库统计信息。",
+)
+def health_check():
+    stats = db.get_stats()
+    return {
+        "status":      "ok",
+        "total_codes": stats["total_codes"],
+        "total_rows":  stats["total_rows"],
+        "latest_date": stats["latest_date"],
+    }
