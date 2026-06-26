@@ -115,10 +115,10 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
 
 # ═══════════════════════════════════════════════
 # 2. A股指数 —— ak.stock_zh_index_daily_em
+#    失败则 fallback 到 ak.stock_zh_index_daily（新浪，不支持日期参数）
 # ═══════════════════════════════════════════════
 
 # 指数代码 → AkShare symbol 前缀规则
-# 0/6开头 → 上交所(sh); 3开头 → 深交所(sz); 4/9开头 → 自定义指数(不加前缀)
 def _index_symbol(code: str) -> str:
     if code.startswith("0") or code.startswith("6"):
         return f"sh{code}"
@@ -129,22 +129,43 @@ def _index_symbol(code: str) -> str:
 
 def _fetch_index(code: str, start_date="19900101", end_date="21001231") -> List[Dict]:
     symbol = _index_symbol(code)
+
+    # 首选：新浪接口（稳定，但不支持日期参数，需拉全量后过滤）
+    try:
+        df = _retry_call(ak.stock_zh_index_daily, symbol=symbol)
+        if df is not None and not df.empty:
+            # 过滤日期范围
+            try:
+                df["date"] = pd.to_datetime(df["date"])
+                start_dt = pd.to_datetime(start_date, format="%Y%m%d")
+                end_dt   = pd.to_datetime(end_date,   format="%Y%m%d")
+                df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+                df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+            except Exception as e2:
+                logger.warning("⚠️  指数 %s 日期过滤失败（返回全量）: %s", code, e2)
+            col_map = _COL_MAP_US
+            records = _df_to_records(df, code, col_map=col_map)
+            logger.info("✅  指数 %s 拉取 %d 条（新浪）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_index_daily(%s) 失败: %s，尝试东方财富接口", symbol, e)
+
+    # 回退：东方财富接口（支持日期参数，但网络不稳定）
     try:
         df = _retry_call(
             ak.stock_zh_index_daily_em, symbol=symbol,
             start_date=start_date, end_date=end_date,
         )
-    except Exception:
-        # 回退：尝试不带前缀
-        logger.warning("⚠️  index_em(%s) 失败，尝试 stock_zh_index_daily", symbol)
-        df = _retry_call(
-            ak.stock_zh_index_daily, symbol=symbol,
-        )
+    except Exception as e2:
+        logger.warning("⚠️  stock_zh_index_daily_em(%s) 也失败: %s", symbol, e2)
+
     if df is None or df.empty:
-        logger.warning("⚠️  指数 %s 返回空数据", code)
+        logger.warning("⚠️  指数 %s 所有数据源均返回空数据", code)
         return []
-    records = _df_to_records(df, code)
-    logger.info("✅  指数 %s 拉取 %d 条", code, len(records))
+
+    col_map = _COL_MAP_CN
+    records = _df_to_records(df, code, col_map=col_map)
+    logger.info("✅  指数 %s 拉取 %d 条（东方财富）", code, len(records))
     return records
 
 
