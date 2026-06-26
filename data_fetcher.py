@@ -10,6 +10,7 @@ import pandas as pd
 from config import (
     FETCH_RETRY, FETCH_DELAY, FALLBACK_HOT_STOCKS,
     CODE_TYPE_MAP, CODE_NAME_MAP, CUSTOM_FAVORITES,
+    PRIORITY_STOCKS,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,14 +105,13 @@ def _df_to_records(df: pd.DataFrame, code: str, col_map=None) -> List[Dict[str, 
 
 
 # ═══════════════════════════════════════════════
-# 1. A股个股 —— 三层回退：腾讯 → 新浪 → akshare 默认
-#    东方财富 priority: 由于 akshare 1.18.64 已移除 stock_zh_a_hist_em，
-#    A 股个股暂无东方财富日线接口可用。腾讯（stock_zh_a_hist_tx）
-#    作为首选（不含成交额），新浪（stock_zh_a_daily）作为补全回退。
+# 1. A股个股 —— 三层回退：东方财富 → 腾讯 → 新浪
+#    东方财富优先级最高（ak.stock_zh_a_hist，底层 push2his.eastmoney.com），
+#    数据完整（成交量+成交额），写入后通过 INSERT OR REPLACE 覆盖旧数据。
+#    腾讯（stock_zh_a_hist_tx）不含成交额，新浪（stock_zh_a_daily）作最后回退。
 #    统一标准（东方财富格式）：
 #      volume  = 成交量（手，1手=100股）
 #      turnover = 成交额（元）
-#    INSERT OR REPLACE 策略确保东方财富数据（非A股）写入后覆盖旧数据。
 # ═══════════════════════════════════════════════
 
 # 腾讯/新浪数据源使用 sh/sz/bj 前缀
@@ -150,7 +150,20 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
     code = _normalize_code(code)
     symbol = _daily_symbol(code)
 
-    # 第1层：腾讯证券（最稳定，成交量单位=手，无成交额）
+    # 第1层：东方财富（优先级最高，成交量=手，成交额=元，数据最完整）
+    try:
+        df = _retry_call(
+            ak.stock_zh_a_hist, symbol=code, period="daily",
+            start_date=start_date, end_date=end_date, adjust="qfq",
+        )
+        if df is not None and not df.empty:
+            records = _df_to_records(df, code, col_map=_COL_MAP_CN)
+            logger.info("✅  A股 %s 拉取 %d 条（东方财富）", code, len(records))
+            return records
+    except Exception as e:
+        logger.warning("⚠️  stock_zh_a_hist(%s) 失败: %s，尝试腾讯接口", code, e)
+
+    # 第2层：腾讯证券（成交量单位=手，无成交额）
     try:
         df = _retry_call(
             ak.stock_zh_a_hist_tx, symbol=symbol,
@@ -163,7 +176,7 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
     except Exception as e:
         logger.warning("⚠️  stock_zh_a_hist_tx(%s) 失败: %s，尝试新浪接口", symbol, e)
 
-    # 第2层：新浪日线（成交量=股需÷100→手；成交额=元）
+    # 第3层：新浪日线（成交量=股需÷100→手；成交额=元）
     try:
         df = _retry_call(
             ak.stock_zh_a_daily, symbol=symbol,
@@ -177,24 +190,10 @@ def _fetch_a_stock(code: str, start_date="19900101", end_date="21001231") -> Lis
             logger.info("✅  A股 %s 拉取 %d 条（新浪）", code, len(records))
             return records
     except Exception as e:
-        logger.warning("⚠️  stock_zh_a_daily(%s) 失败: %s，尝试默认接口", symbol, e)
-
-    # 第3层：akshare 默认接口
-    try:
-        df = _retry_call(
-            ak.stock_zh_a_hist, symbol=code, period="daily",
-            start_date=start_date, end_date=end_date, adjust="qfq",
-        )
-    except Exception as e:
-        logger.warning("⚠️  stock_zh_a_hist(%s) 也失败: %s", code, e)
+        logger.warning("⚠️  stock_zh_a_daily(%s) 也失败: %s", symbol, e)
         return []
 
-    if df is None or df.empty:
-        logger.warning("⚠️  A股 %s 所有数据源均返回空数据", code)
-        return []
-    records = _df_to_records(df, code)
-    logger.info("✅  A股 %s 拉取 %d 条（默认回退）", code, len(records))
-    return records
+    return []
 
 
 # ═══════════════════════════════════════════════
@@ -420,8 +419,12 @@ def fetch_incremental(code: str, since_date: str) -> List[Dict[str, Any]]:
 # ═══════════════════════════════════════════════
 
 def fetch_hot_stock_list() -> List[str]:
-    """沪深300 + 中证500 + 用户自选 + 兜底 + CODE_TYPE_MAP中的非stock代码"""
+    """优先级标的 → 沪深300 → 中证500 → 用户自选 → 多市场 → 兜底"""
     codes: List[str] = []
+
+    # 0. 优先级标的（用户指定，必须最先处理）
+    codes += PRIORITY_STOCKS
+    logger.info("📋  优先级标的: %d 个", len(PRIORITY_STOCKS))
 
     # 1. 沪深300
     try:

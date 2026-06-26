@@ -13,7 +13,7 @@ import db
 import data_fetcher as fetcher
 import scheduler as sched
 from api import router
-from config import BATCH_SIZE
+from config import BATCH_SIZE, FETCH_DELAY
 
 # ─────────────────────────────────────────────
 # 日志配置
@@ -27,12 +27,13 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────
-# 预热任务（后台异步执行，不阻塞服务启动）
+# 预热任务 —— 在线程池中执行，不阻塞事件循环
 # ─────────────────────────────────────────────
-async def warmup_task():
+def _sync_warmup():
     """
-    在后台分批预热热门股票数据。
-    已有数据的股票直接跳过，不重复拉取。
+    同步预热逻辑：获取热门列表 → 过滤已缓存 → 分批拉取写入。
+    全部在线程池中执行，避免阻塞 asyncio 事件循环导致
+    Render 健康检查超时（No open ports detected）。
     """
     logger.info("🔥  开始预热热门股票数据...")
     try:
@@ -50,7 +51,7 @@ async def warmup_task():
         logger.info("✅  所有热门股票已预热，无需重复加载")
         return
 
-    # 分批执行（每批 BATCH_SIZE 只），批次间短暂让出事件循环
+    # 分批执行（每批 BATCH_SIZE 只），批次间等待减轻 AkShare 压力
     total_written = 0
     for batch_start in range(0, len(to_fetch), BATCH_SIZE):
         batch = to_fetch[batch_start: batch_start + BATCH_SIZE]
@@ -69,11 +70,11 @@ async def warmup_task():
             except Exception as e:
                 logger.error("  ❌  %s 预热失败: %s", code, e)
 
-            # 让出事件循环，避免完全阻塞（I/O 密集型调用）
-            await asyncio.sleep(0)
+            # 单只股票间短暂等待，减轻 AkShare 服务器压力
+            time.sleep(FETCH_DELAY)
 
-        # 批次间短暂等待，减轻 AkShare 服务器压力
-        await asyncio.sleep(2)
+        # 批次间额外等待
+        time.sleep(3)
 
     logger.info("🏁  预热完成，共写入 %d 条记录", total_written)
 
@@ -92,8 +93,10 @@ async def lifespan(app: FastAPI):
     # 2. 启动定时任务
     sched.start_scheduler()
 
-    # 3. 异步预热（不阻塞服务就绪）
-    asyncio.create_task(warmup_task())
+    # 3. 延迟 5 秒后在线程池中启动预热
+    #    （等 uvicorn 先绑定端口，避免 Render 健康检查报 "No open ports"）
+    loop = asyncio.get_event_loop()
+    loop.call_later(5, lambda: loop.run_in_executor(None, _sync_warmup))
 
     logger.info("✅  服务已就绪，API 可访问")
 
@@ -111,12 +114,13 @@ app = FastAPI(
     title="A股多市场历史数据 API",
     description=(
         "轻量级多市场历史日线数据服务。支持 A股 / 指数 / 美股 / 全球指数 / 期货 / 港股。\n\n"
-        "- **热门预热**：启动后自动拉取沪深300+中证500成分股 + 用户自选\n"
+        "- **优先级预热**：启动后优先拉取用户指定的 28 个核心标的（指数/期货/ETF/虚拟货币）\n"
+        "- **热门预热**：其次拉取沪深300+中证500成分股 + 用户自选\n"
         "- **按需加载**：首次请求时自动从 AkShare 拉取并缓存\n"
         "- **增量更新**：每个工作日 16:30 自动更新已缓存数据\n"
         "- **多市场**：通过 `config.CODE_TYPE_MAP` 配置资产类型映射"
     ),
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
 )
 
